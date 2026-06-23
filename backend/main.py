@@ -14,6 +14,36 @@ from auth import hash_password
 from routers import questions, sessions, admin
 from services import keep_alive
 from sqlalchemy.orm import Session
+from middleware.logging import LoggingMiddleware  # ← import
+
+def setup_logging() -> None:
+    fmt     = "%(asctime)s  %(levelname)-8s  %(name)s  %(message)s"
+    datefmt = "%Y-%m-%d %H:%M:%S"
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format=fmt,
+        datefmt=datefmt,
+    )
+
+    # ── Silence Uvicorn ────────────────────────────────────────────
+    logging.getLogger("uvicorn.access").handlers  = []
+    logging.getLogger("uvicorn.access").propagate = False
+    logging.getLogger("uvicorn.error").handlers   = []
+    logging.getLogger("uvicorn.error").propagate  = False
+    logging.getLogger("uvicorn").handlers         = []
+    logging.getLogger("uvicorn").propagate        = False
+
+    # ── Silence HTTPX ──────────────────────────────────────────────
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)  # httpx internals
+
+    # ── Silence noisy third-party loggers ──────────────────────────
+    logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
+    logging.getLogger("alembic").setLevel(logging.INFO)
+
+
+setup_logging()
 
 logging.basicConfig(
     level=logging.INFO,
@@ -116,6 +146,7 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="Sayel API", version="1.0.0", lifespan=lifespan)
+app.add_middleware(LoggingMiddleware) 
 
 app.add_middleware(
     CORSMiddleware,

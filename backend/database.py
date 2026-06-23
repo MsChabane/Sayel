@@ -46,8 +46,8 @@ class Base(DeclarativeBase):
 
 
 def _build_engine():
-    is_sqlite = "sqlite" in settings.DATABASE_URL
-
+    is_sqlite = settings.DATABASE_URL.startswith("sqlite")
+    print("is sqlte",is_sqlite)
     if is_sqlite:
         return create_engine(
             settings.DATABASE_URL,

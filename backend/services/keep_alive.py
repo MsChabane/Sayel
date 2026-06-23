@@ -17,14 +17,10 @@ async def _ping_loop() -> None:
         while True:
             await asyncio.sleep(_INTERVAL)
             try:
-                response = await client.get(_URL)
-                logger.debug("Keep-alive ping %d", response.status_code)
+                 await client.get(_URL)
+               
             except httpx.RequestError as exc:
-                logger.warning("Keep-alive ping failed: %s", exc)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                logger.error("Keep-alive error: %s", exc)
+                pass
 
 
 def start() -> None:

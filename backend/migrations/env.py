@@ -47,7 +47,7 @@ def run_migrations_online() -> None:
         
     )
     with connectable.connect() as connection:
-        if "sqlite" in settings.DATABASE_URL:
+        if settings.DATABASE_URL.startswith("sqlite"):
             connection.execute(text("PRAGMA journal_mode=WAL"))
         context.configure(connection=connection, target_metadata=target_metadata,
                           render_as_batch=True, naming_convention=naming_convention,
