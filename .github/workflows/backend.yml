@@ -39,7 +39,7 @@ concurrency:
 # ── Environment variables shared across all jobs ───────────────────────────────
 env:
   DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-  IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/{{ secrets.DOCKERHUB_REPO_NAME_BACKEND }}
+  IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/${{ secrets.DOCKERHUB_REPO_NAME_BACKEND }}
   PYTHON_VERSION: '3.12'
 
 jobs:
