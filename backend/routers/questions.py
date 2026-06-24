@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import select,func
 from sqlalchemy.orm import Session as DBSession
 from database import get_db
 from models import Admin, Question, QuestionOption
@@ -33,10 +33,11 @@ def admin_get_question(question_id: int, db: DBSession = Depends(get_db), _: Adm
 def create_question(payload: QuestionCreate, db: DBSession = Depends(get_db), _: Admin = Depends(get_current_admin)):
     if db.scalar(select(Question).where(Question.slug == payload.slug)):
         raise HTTPException(status_code=409, detail=f"Slug '{payload.slug}' already exists")
+    total_questions = db.scalar(select(func.count(Question.id)).where(Question.is_active == True)) or 0
     question = Question(
         title=payload.title, slug=payload.slug, description=payload.description,
         type=payload.type, required=payload.required,
-        placeholder=payload.placeholder, order_index=payload.order_index,
+        placeholder=payload.placeholder, order_index=total_questions,
     )
     db.add(question)
     db.flush()

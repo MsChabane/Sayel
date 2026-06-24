@@ -55,7 +55,6 @@ const questionSchema = z.object({
   type: z.string(),
   required: z.boolean(),
   placeholder: z.string().optional(),
-  order_index: z.coerce.number().min(0),
   options: z.array(
     z.object({
       label: z.string().min(1, 'الخيار مطلوب'),
@@ -290,7 +289,7 @@ export default function QuestionsPage() {
     formState: { errors, isSubmitting },
   } = useForm<QuestionForm>({
     resolver: zodResolver(questionSchema),
-    defaultValues: { type: 'text', required: true, order_index: 0, options: [] },
+    defaultValues: { type: 'text', required: true,  options: [] },
   })
 
   const { fields, append, remove } = useFieldArray({ control, name: 'options' })
@@ -399,7 +398,7 @@ export default function QuestionsPage() {
   // ── Form handlers ────────────────────────────────────────────────────────────
 
   const openCreate = () => {
-    reset({ type: 'text', required: true, order_index: questions.length, options: [] })
+    reset({ type: 'text', required: true,  options: [] })
     setEditingId(null)
     setShowForm(true)
   }
@@ -412,7 +411,6 @@ export default function QuestionsPage() {
       type: q.type,
       required: q.required,
       placeholder: q.placeholder ?? '',
-      order_index: q.order_index,
       options: q.options.map((o) => ({
         label: o.label, value: o.value, order_index: o.order_index,
       })),
@@ -593,7 +591,7 @@ export default function QuestionsPage() {
                     />
                   </Field>
 
-                  <div className="grid grid-cols-2 gap-4">
+                
                     <Field label="نوع السؤال" error={errors.type?.message}>
                       <select {...register('type')} className={inputCls}>
                         {QUESTION_TYPES.map((t) => (
@@ -601,14 +599,8 @@ export default function QuestionsPage() {
                         ))}
                       </select>
                     </Field>
-                    <Field label="الترتيب" error={errors.order_index?.message}>
-                      <input
-                        {...register('order_index')}
-                        type="number" min={0}
-                        className={inputCls}
-                      />
-                    </Field>
-                  </div>
+                    
+                 
 
                   <Field label="وصف إضافي (اختياري)" error={errors.description?.message}>
                     <textarea

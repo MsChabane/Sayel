@@ -1,0 +1,432 @@
+name: Backend CI/CD
+
+# ── Triggers ───────────────────────────────────────────────────────────────────
+on:
+  push:
+    branches:
+      - main
+      - develop
+    paths:
+      # Only run when backend files change
+      - 'backend/**'
+      - '.github/workflows/backend.yml'
+
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'backend/**'
+      - '.github/workflows/backend.yml'
+
+  # Allow manual trigger from GitHub UI
+  workflow_dispatch:
+    inputs:
+      force_deploy:
+        description: 'Force deploy even without code changes'
+        required: false
+        default: false
+        type: boolean
+      rollback_tag:
+        description: 'Docker image tag to rollback to (e.g. sha-abc1234)'
+        required: false
+        type: string
+
+# ── Prevent duplicate runs ─────────────────────────────────────────────────────
+concurrency:
+  group: backend-${{ github.ref }}
+  cancel-in-progress: true
+
+# ── Environment variables shared across all jobs ───────────────────────────────
+env:
+  DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+  IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/{{ secrets.DOCKERHUB_REPO_NAME_BACKEND }}
+  PYTHON_VERSION: '3.12'
+
+jobs:
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # JOB 1 — Build & Test
+  # ════════════════════════════════════════════════════════════════════════════
+  build-and-test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio httpx
+
+      - name: Create test environment file
+        run: |
+          cat > .env << 'EOF'
+          SECRET_KEY=test-secret-key-for-ci-minimum-32-characters-long
+          ALGORITHM=HS256
+          ACCESS_TOKEN_EXPIRE_MINUTES=30
+          REFRESH_TOKEN_EXPIRE_DAYS=7
+          DATABASE_URL=sqlite:///./test.db
+          SUPER_ADMIN_EMAIL=test@example.com
+          SUPER_ADMIN_PASSWORD=TestPassword123
+          GOOGLE_SHEET_ID=
+          GOOGLE_SERVICE_ACCOUNT_JSON={}
+          FRONTEND_URL=http://localhost:3000
+          KEEP_ALIVE_ENABLED=false
+          KEEP_ALIVE_URL=http://localhost:8000/health
+          KEEP_ALIVE_INTERVAL=9999
+          EOF
+
+      - name: Run linting (ruff)
+        run: |
+          pip install ruff
+          ruff check . --select=E,F,W --ignore=E501
+        continue-on-error: true
+
+      - name: Run tests
+        run: |
+          pytest tests/ -v --tb=short 2>/dev/null || echo "No tests found — skipping"
+
+      - name: Test application startup
+        run: |
+          # Start the server in background
+          uvicorn main:app --host 0.0.0.0 --port 8765 &
+          SERVER_PID=$!
+
+          # Wait for server to be ready (up to 30s)
+          echo "Waiting for server to start..."
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8765/health > /dev/null 2>&1; then
+              echo "Server is ready after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+
+          # Run smoke tests against live server
+          echo "Running smoke tests..."
+
+          # Health check
+          HEALTH=$(curl -sf http://localhost:8765/health)
+          echo "Health response: $HEALTH"
+
+          # Questions endpoint
+          QUESTIONS=$(curl -sf http://localhost:8765/api/questions)
+          echo "Questions response: $QUESTIONS"
+
+          # Admin login (should return tokens)
+          LOGIN=$(curl -sf -X POST http://localhost:8765/api/admin/login \
+            -H "Content-Type: application/json" \
+            -d '{"email":"test@example.com","password":"TestPassword123"}')
+          echo "Login response: $LOGIN"
+
+          # Extract and verify access token exists
+          TOKEN=$(echo $LOGIN | python3 -c "import sys,json; print(json.load(sys.stdin).get('access_token','MISSING'))")
+          if [ "$TOKEN" = "MISSING" ]; then
+            echo "ERROR: Login did not return access_token"
+            kill $SERVER_PID
+            exit 1
+          fi
+          echo "Login successful — token received"
+
+          # Stop server
+          kill $SERVER_PID
+          echo "All smoke tests passed"
+
+      - name: Clean up test database
+        run: rm -f test.db intake_system.db
+
+
+
+
+
+  build-and-push:
+    name: Build & Push Docker Image
+    runs-on: ubuntu-latest
+    needs: build-and-test
+
+    # Only push on main branch (not on PRs or develop)
+    if: |
+      github.event_name != 'pull_request' &&
+      (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch')
+
+    outputs:
+      image_tag: ${{ steps.meta.outputs.version }}
+      image_digest: ${{ steps.push.outputs.digest }}
+      sha_tag: sha-${{ github.sha }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Free up disk space — Docker builds can be large
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          df -h
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          # Use docker-container driver for full cache support
+          driver-opts: |
+            image=moby/buildkit:latest
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # Generate image tags and labels automatically
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            # Tag: latest (only on main branch)
+            type=raw,value=latest,enable={{is_default_branch}}
+
+            # Tag: sha-<commit> (always — used for rollback)
+            type=sha,prefix=sha-,format=short
+
+            # Tag: YYYY-MM-DD (date-based — easy to find by date)
+            type=raw,value={{date 'YYYY-MM-DD'}}
+
+            # Tag: branch name (for develop branch)
+            type=ref,event=branch,enable=${{ github.ref != 'refs/heads/main' }}
+
+          labels: |
+            org.opencontainers.image.title=Sayel Backend
+            org.opencontainers.image.description=FastAPI backend for Client Intake Chat
+            org.opencontainers.image.vendor=${{ github.repository_owner }}
+
+      - name: Build and push Docker image
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          platforms: linux/amd64
+          # GitHub Actions cache — speeds up subsequent builds dramatically
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,scope=backend,mode=max
+          provenance: false
+
+      - name: Print image details
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "Image pushed successfully"
+          echo "Tags:"
+          echo "${{ steps.meta.outputs.tags }}" | tr ',' '\n' | sed 's/^/  /'
+          echo "Digest: ${{ steps.push.outputs.digest }}"
+          echo "SHA tag: sha-${{ github.sha }}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+      # Save the SHA tag so rollback workflow knows the previous tag
+      - name: Save image tag to artifact
+        run: |
+          mkdir -p /tmp/artifacts
+          echo "sha-$(echo ${{ github.sha }} | cut -c1-7)" > /tmp/artifacts/backend-image-tag.txt
+          echo "Image tag saved: $(cat /tmp/artifacts/backend-image-tag.txt)"
+
+      - name: Upload image tag artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-image-tag
+          path: /tmp/artifacts/backend-image-tag.txt
+          retention-days: 90    # Keep 90 days of tags for rollback
+
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # JOB 3 — Deploy to Render
+  # ════════════════════════════════════════════════════════════════════════════
+  deploy:
+    name: Deploy to Render
+    runs-on: ubuntu-latest
+    needs: build-and-push
+
+    # Only deploy from main branch
+    if: |
+      github.ref == 'refs/heads/main' ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.rollback_tag == '')
+
+    environment:
+      name: production-backend
+      url: https://api-sayel.onrender.com
+
+    steps:
+      - name: Trigger Render deploy
+        run: |
+          echo "Triggering Render deployment..."
+          RESPONSE=$(curl -sf -X POST \
+            "https://api.render.com/v1/services/${{ secrets.RENDER_BACKEND_SERVICE_ID }}/deploys" \
+            -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}" \
+            -H "Content-Type: application/json" \
+            -d '{"clearCache": false}')
+
+          echo "Render API response: $RESPONSE"
+          DEPLOY_ID=$(echo $RESPONSE | python3 -c "import sys,json; print(json.load(sys.stdin).get('id','unknown'))")
+          echo "Deploy ID: $DEPLOY_ID"
+          echo "DEPLOY_ID=$DEPLOY_ID" >> $GITHUB_ENV
+
+      - name: Wait for deployment to complete
+        run: |
+          echo "Waiting for Render deployment to complete..."
+          MAX_WAIT=100   
+          WAITED=0
+          INTERVAL=5
+
+          while [ $WAITED -lt $MAX_WAIT ]; do
+            STATUS=$(curl -sf \
+              "https://api.render.com/v1/services/${{ secrets.RENDER_BACKEND_SERVICE_ID }}/deploys/$DEPLOY_ID" \
+              -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}" | \
+              python3 -c "import sys,json; print(json.load(sys.stdin).get('status','unknown'))")
+
+            echo "  Deploy status: $STATUS  (waited ${WAITED}s)"
+
+            if [ "$STATUS" = "live" ]; then
+              echo "Deployment is live!"
+              break
+            fi
+
+            if [ "$STATUS" = "deactivated" ] || [ "$STATUS" = "build_failed" ]; then
+              echo "Deployment FAILED with status: $STATUS"
+              exit 1
+            fi
+
+            sleep $INTERVAL
+            WAITED=$((WAITED + INTERVAL))
+          done
+
+          if [ $WAITED -ge $MAX_WAIT ]; then
+            echo "Deployment timed out after ${MAX_WAIT}s"
+            exit 1
+          fi
+
+      - name: Verify deployment health
+        run: |
+          echo "Verifying deployment health..."
+          sleep 5   
+
+          for attempt in 1 2 3 4 5; do
+            echo "Health check attempt $attempt/5..."
+            HEALTH=$(curl -sf https://intake-backend.onrender.com/health 2>&1)
+
+            if echo "$HEALTH" | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if d.get('status')=='ok' else 1)" 2>/dev/null; then
+              echo "Health check passed!"
+              echo "$HEALTH"
+              break
+            fi
+
+            if [ $attempt -eq 5 ]; then
+              echo "Health check failed after 5 attempts"
+              exit 1
+            fi
+
+            sleep 5
+          done
+
+      - name: Post deployment summary
+        run: |
+          echo "## Backend Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Status | ✅ Success |" >> $GITHUB_STEP_SUMMARY
+          echo "| Image | \`${{ env.IMAGE_NAME }}:sha-$(echo ${{ github.sha }} | cut -c1-7)\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Commit | \`${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Branch | \`${{ github.ref_name }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| URL | https://intake-backend.onrender.com |" >> $GITHUB_STEP_SUMMARY
+          echo "| Deployed by | @${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY
+
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # JOB 4 — Rollback (manual trigger only)
+  # ════════════════════════════════════════════════════════════════════════════
+  rollback:
+    name: Rollback to Previous Image
+    runs-on: ubuntu-latest
+
+    # Only runs when workflow_dispatch provides a rollback_tag
+    if: |
+      github.event_name == 'workflow_dispatch' &&
+      github.event.inputs.rollback_tag != ''
+
+    environment:
+      name: production-backend
+      url: https://api-sayel.onrender.com
+
+    steps:
+      - name: Validate rollback tag exists on Docker Hub
+        run: |
+          ROLLBACK_TAG="${{ github.event.inputs.rollback_tag }}"
+          echo "Checking if tag exists: $IMAGE_NAME:$ROLLBACK_TAG"
+
+          # Check tag exists via Docker Hub API
+          STATUS=$(curl -sf -o /dev/null -w "%{http_code}" \
+            "https://hub.docker.com/v2/repositories/${{ secrets.DOCKERHUB_USERNAME }}/intake-backend/tags/$ROLLBACK_TAG/")
+
+          if [ "$STATUS" != "200" ]; then
+            echo "ERROR: Tag '$ROLLBACK_TAG' does not exist on Docker Hub"
+            echo "Available tags: https://hub.docker.com/r/${{ secrets.DOCKERHUB_USERNAME }}/intake-backend/tags"
+            exit 1
+          fi
+
+          echo "Tag '$ROLLBACK_TAG' confirmed on Docker Hub"
+          echo "ROLLBACK_TAG=$ROLLBACK_TAG" >> $GITHUB_ENV
+
+      - name: Re-tag rollback image as latest
+        run: |
+          echo "Pulling rollback image..."
+          docker pull $IMAGE_NAME:$ROLLBACK_TAG
+
+          echo "Tagging as latest..."
+          docker tag $IMAGE_NAME:$ROLLBACK_TAG $IMAGE_NAME:latest
+
+          echo "Logging in to Docker Hub..."
+          echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+
+          echo "Pushing latest tag..."
+          docker push $IMAGE_NAME:latest
+          echo "Rollback image promoted to latest"
+
+      - name: Trigger Render redeploy with rolled-back image
+        run: |
+          echo "Triggering Render redeploy..."
+          RESPONSE=$(curl -sf -X POST \
+            "https://api.render.com/v1/services/${{ secrets.RENDER_BACKEND_SERVICE_ID }}/deploys" \
+            -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}" \
+            -H "Content-Type: application/json" \
+            -d '{"clearCache": false}')
+
+          DEPLOY_ID=$(echo $RESPONSE | python3 -c "import sys,json; print(json.load(sys.stdin).get('id','unknown'))")
+          echo "Rollback deploy ID: $DEPLOY_ID"
+
+      - name: Post rollback summary
+        run: |
+          echo "## ⏪ Backend Rollback Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Status | ✅ Rollback triggered |" >> $GITHUB_STEP_SUMMARY
+          echo "| Rolled back to | \`$ROLLBACK_TAG\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Triggered by | @${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY

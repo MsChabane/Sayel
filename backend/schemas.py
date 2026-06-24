@@ -85,7 +85,6 @@ class QuestionCreate(BaseModel):
     type:        QuestionType
     required:    bool = True
     placeholder: str | None = None
-    order_index: int = 0
     options:     list[QuestionOptionCreate] = []
 
     @field_validator("slug")

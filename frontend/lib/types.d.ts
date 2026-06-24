@@ -27,7 +27,6 @@ export interface QuestionCreate {
   type: string
   required: boolean
   placeholder?: string
-  order_index: number
   options: { label: string; value: string; order_index: number }[]
 }
 
