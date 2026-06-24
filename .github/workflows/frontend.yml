@@ -35,7 +35,7 @@ concurrency:
 
 env:
   DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-  IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/{{ secrets.DOCKERHUB_REPO_NAME_FRONTEND }}
+  IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/${{ secrets.DOCKERHUB_REPO_NAME_FRONTEND }}
   NODE_VERSION: '18'
 
 jobs:
