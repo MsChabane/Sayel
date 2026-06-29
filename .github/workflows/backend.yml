@@ -288,7 +288,7 @@ jobs:
             "https://api.render.com/v1/services/${SERVICE_ID}/deploys" \
             -H "Authorization: Bearer $API_KEY" \
             -H "Content-Type: application/json" \
-            -d '{"clearCache":false}')
+           )
 
           echo "HTTP: $HTTP_CODE"
           cat response.json
@@ -432,7 +432,7 @@ jobs:
             "https://api.render.com/v1/services/${SERVICE_ID}/deploys" \
             -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}" \
             -H "Content-Type: application/json" \
-            -d '{"clearCache": false}')
+            )
 
           DEPLOY_ID=$(echo $RESPONSE | python3 -c "import sys,json; print(json.load(sys.stdin).get('id','unknown'))")
           echo "Rollback deploy ID: $DEPLOY_ID"
