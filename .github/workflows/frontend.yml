@@ -193,13 +193,16 @@ jobs:
 
     steps:
       - name: Trigger Render deploy
+        env:
+          SERVICE_ID: ${{ secrets.RENDER_BACKEND_SERVICE_ID }}
+          API_KEY: ${{ secrets.RENDER_API_KEY }}
         run: |
           echo "Triggering Render frontend deployment..."
           RESPONSE=$(curl -sf -X POST \
-            "https://api.render.com/v1/services/${{ secrets.RENDER_FRONTEND_SERVICE_ID }}/deploys" \
+            "https://api.render.com/v1/services/${SERVICE_ID}/deploys"  \
             -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}" \
             -H "Content-Type: application/json" \
-            -d '{"clearCache": false}')
+            )
 
           echo "Render API response: $RESPONSE"
           DEPLOY_ID=$(echo $RESPONSE | python3 -c "import sys,json; print(json.load(sys.stdin).get('id','unknown'))")
@@ -207,6 +210,9 @@ jobs:
           echo "DEPLOY_ID=$DEPLOY_ID" >> $GITHUB_ENV
 
       - name: Wait for deployment to complete
+        env:
+          SERVICE_ID: ${{ secrets.RENDER_BACKEND_SERVICE_ID }}
+          API_KEY: ${{ secrets.RENDER_API_KEY }}
         run: |
           MAX_WAIT=100
           WAITED=0
@@ -214,7 +220,7 @@ jobs:
 
           while [ $WAITED -lt $MAX_WAIT ]; do
             STATUS=$(curl -sf \
-              "https://api.render.com/v1/services/${{ secrets.RENDER_FRONTEND_SERVICE_ID }}/deploys/$DEPLOY_ID" \
+              "https://api.render.com/v1/services/${SERVICE_ID}/deploys/$DEPLOY_ID" \
               -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}" | \
               python3 -c "import sys,json; print(json.load(sys.stdin).get('status','unknown'))")
 
@@ -317,7 +323,7 @@ jobs:
             "https://api.render.com/v1/services/${{ secrets.RENDER_FRONTEND_SERVICE_ID }}/deploys" \
             -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}" \
             -H "Content-Type: application/json" \
-            -d '{"clearCache": false}'
+           '
 
       - name: Post rollback summary
         run: |
