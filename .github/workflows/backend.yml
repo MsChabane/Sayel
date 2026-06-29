@@ -274,19 +274,23 @@ jobs:
       url: https://api-sayel.onrender.com
 
     steps:
-      - name: Trigger Render deploy
+      - name: Trigger Render
         run: |
-          echo "Triggering Render deployment..."
-          RESPONSE=$(curl -s -X POST \
+          HTTP_CODE=$(curl -s \
+            -o response.json \
+            -w "%{http_code}" \
+            -X POST \
             "https://api.render.com/v1/services/${{ secrets.RENDER_BACKEND_SERVICE_ID }}/deploys" \
             -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}" \
             -H "Content-Type: application/json" \
-            -d '{"clearCache": false}')
+            -d '{"clearCache":false}')
 
-          echo "Render API response: $RESPONSE"
-          DEPLOY_ID=$(echo $RESPONSE | python3 -c "import sys,json; print(json.load(sys.stdin).get('id','unknown'))")
-          echo "Deploy ID: $DEPLOY_ID"
-          echo "DEPLOY_ID=$DEPLOY_ID" >> $GITHUB_ENV
+          echo "HTTP Code: $HTTP_CODE"
+          cat response.json
+
+          if [ "$HTTP_CODE" != "201" ]; then
+            exit 1
+          fi
 
       - name: Wait for deployment to complete
         run: |
