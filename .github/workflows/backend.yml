@@ -277,7 +277,7 @@ jobs:
       - name: Trigger Render deploy
         run: |
           echo "Triggering Render deployment..."
-          RESPONSE=$(curl -sf -X POST \
+          RESPONSE=$(curl -s -X POST \
             "https://api.render.com/v1/services/${{ secrets.RENDER_BACKEND_SERVICE_ID }}/deploys" \
             -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}" \
             -H "Content-Type: application/json" \
@@ -296,7 +296,7 @@ jobs:
           INTERVAL=5
 
           while [ $WAITED -lt $MAX_WAIT ]; do
-            STATUS=$(curl -sf \
+            STATUS=$(curl -s \
               "https://api.render.com/v1/services/${{ secrets.RENDER_BACKEND_SERVICE_ID }}/deploys/$DEPLOY_ID" \
               -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}" | \
               python3 -c "import sys,json; print(json.load(sys.stdin).get('status','unknown'))")
