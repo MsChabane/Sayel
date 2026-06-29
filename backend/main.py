@@ -155,7 +155,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
+@app.get("/")
+def index():
+    return {
+        "app":"sayel",
+        'version':"1.0.0"
+    }
 app.include_router(questions.router, prefix="/api", tags=["Questions"])
 app.include_router(sessions.router,  prefix="/api", tags=["Sessions"])
 app.include_router(admin.router,     prefix="/api", tags=["Admin"])
