@@ -275,17 +275,22 @@ jobs:
 
     steps:
       - name: Trigger Render
+        env:
+          SERVICE_ID: ${{ secrets.RENDER_BACKEND_SERVICE_ID }}
+          API_KEY: ${{ secrets.RENDER_API_KEY }}
         run: |
+          SERVICE_ID=$(echo "$SERVICE_ID" | tr -d '[:space:]')
+
           HTTP_CODE=$(curl -s \
             -o response.json \
             -w "%{http_code}" \
             -X POST \
-            "https://api.render.com/v1/services/${{ secrets.RENDER_BACKEND_SERVICE_ID }}/deploys" \
-            -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}" \
+            "https://api.render.com/v1/services/${SERVICE_ID}/deploys" \
+            -H "Authorization: Bearer $API_KEY" \
             -H "Content-Type: application/json" \
             -d '{"clearCache":false}')
 
-          echo "HTTP Code: $HTTP_CODE"
+          echo "HTTP: $HTTP_CODE"
           cat response.json
 
           if [ "$HTTP_CODE" != "201" ]; then
@@ -293,6 +298,9 @@ jobs:
           fi
 
       - name: Wait for deployment to complete
+        env:
+          SERVICE_ID: ${{ secrets.RENDER_BACKEND_SERVICE_ID }}
+          API_KEY: ${{ secrets.RENDER_API_KEY }}
         run: |
           echo "Waiting for Render deployment to complete..."
           MAX_WAIT=100   
@@ -301,7 +309,7 @@ jobs:
 
           while [ $WAITED -lt $MAX_WAIT ]; do
             STATUS=$(curl -s \
-              "https://api.render.com/v1/services/${{ secrets.RENDER_BACKEND_SERVICE_ID }}/deploys/$DEPLOY_ID" \
+              "https://api.render.com/v1/services/${SERVICE_ID}/deploys/$DEPLOY_ID" \
               -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}" | \
               python3 -c "import sys,json; print(json.load(sys.stdin).get('status','unknown'))")
 
@@ -333,7 +341,7 @@ jobs:
 
           for attempt in 1 2 3 4 5; do
             echo "Health check attempt $attempt/5..."
-            HEALTH=$(curl -sf https://intake-backend.onrender.com/health 2>&1)
+            HEALTH=$(curl -sf https://api-sayel.onrender.com/health 2>&1)
 
             if echo "$HEALTH" | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if d.get('status')=='ok' else 1)" 2>/dev/null; then
               echo "Health check passed!"
@@ -359,7 +367,7 @@ jobs:
           echo "| Image | \`${{ env.IMAGE_NAME }}:sha-$(echo ${{ github.sha }} | cut -c1-7)\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Commit | \`${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Branch | \`${{ github.ref_name }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| URL | https://intake-backend.onrender.com |" >> $GITHUB_STEP_SUMMARY
+          echo "| URL | https://api-sayel.onrender.com |" >> $GITHUB_STEP_SUMMARY
           echo "| Deployed by | @${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY
 
 
@@ -387,11 +395,11 @@ jobs:
 
           # Check tag exists via Docker Hub API
           STATUS=$(curl -sf -o /dev/null -w "%{http_code}" \
-            "https://hub.docker.com/v2/repositories/${{ secrets.DOCKERHUB_USERNAME }}/intake-backend/tags/$ROLLBACK_TAG/")
+            "https://hub.docker.com/v2/repositories/${{ secrets.DOCKERHUB_USERNAME }}/${{ secrets.DOCKERHUB_REPO_NAME_BACKEND }}/tags/$ROLLBACK_TAG/")
 
           if [ "$STATUS" != "200" ]; then
             echo "ERROR: Tag '$ROLLBACK_TAG' does not exist on Docker Hub"
-            echo "Available tags: https://hub.docker.com/r/${{ secrets.DOCKERHUB_USERNAME }}/intake-backend/tags"
+            echo "Available tags: https://hub.docker.com/r/${{ secrets.DOCKERHUB_USERNAME }}/${{ secrets.DOCKERHUB_REPO_NAME_BACKEND }}/tags"
             exit 1
           fi
 
@@ -414,10 +422,14 @@ jobs:
           echo "Rollback image promoted to latest"
 
       - name: Trigger Render redeploy with rolled-back image
+        env:
+          SERVICE_ID: ${{ secrets.RENDER_BACKEND_SERVICE_ID }}
+          API_KEY: ${{ secrets.RENDER_API_KEY }}
+
         run: |
           echo "Triggering Render redeploy..."
           RESPONSE=$(curl -sf -X POST \
-            "https://api.render.com/v1/services/${{ secrets.RENDER_BACKEND_SERVICE_ID }}/deploys" \
+            "https://api.render.com/v1/services/${SERVICE_ID}/deploys" \
             -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}" \
             -H "Content-Type: application/json" \
             -d '{"clearCache": false}')
