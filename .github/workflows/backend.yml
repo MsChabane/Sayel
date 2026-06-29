@@ -1,13 +1,11 @@
 name: Backend CI/CD
 
-# ── Triggers ───────────────────────────────────────────────────────────────────
 on:
   push:
     branches:
       - main
       - develop
     paths:
-      # Only run when backend files change
       - 'backend/**'
       - '.github/workflows/backend.yml'
 
@@ -18,7 +16,6 @@ on:
       - 'backend/**'
       - '.github/workflows/backend.yml'
 
-  # Allow manual trigger from GitHub UI
   workflow_dispatch:
     inputs:
       force_deploy:
@@ -31,12 +28,10 @@ on:
         required: false
         type: string
 
-# ── Prevent duplicate runs ─────────────────────────────────────────────────────
 concurrency:
   group: backend-${{ github.ref }}
   cancel-in-progress: true
 
-# ── Environment variables shared across all jobs ───────────────────────────────
 env:
   DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
   IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/${{ secrets.DOCKERHUB_REPO_NAME_BACKEND }}
@@ -46,10 +41,14 @@ jobs:
 
   # ════════════════════════════════════════════════════════════════════════════
   # JOB 1 — Build & Test
+  # Skipped entirely when rollback_tag is provided
   # ════════════════════════════════════════════════════════════════════════════
   build-and-test:
     name: Build & Test
     runs-on: ubuntu-latest
+    if: |
+      github.event.inputs.rollback_tag == '' ||
+      github.event.inputs.rollback_tag == null
 
     defaults:
       run:
@@ -102,11 +101,9 @@ jobs:
 
       - name: Test application startup
         run: |
-          # Start the server in background
           uvicorn main:app --host 0.0.0.0 --port 8765 &
           SERVER_PID=$!
 
-          # Wait for server to be ready (up to 30s)
           echo "Waiting for server to start..."
           for i in $(seq 1 30); do
             if curl -sf http://localhost:8765/health > /dev/null 2>&1; then
@@ -116,24 +113,19 @@ jobs:
             sleep 1
           done
 
-          # Run smoke tests against live server
           echo "Running smoke tests..."
 
-          # Health check
           HEALTH=$(curl -sf http://localhost:8765/health)
           echo "Health response: $HEALTH"
 
-          # Questions endpoint
           QUESTIONS=$(curl -sf http://localhost:8765/api/questions)
           echo "Questions response: $QUESTIONS"
 
-          # Admin login (should return tokens)
           LOGIN=$(curl -sf -X POST http://localhost:8765/api/admin/login \
             -H "Content-Type: application/json" \
             -d '{"email":"test@example.com","password":"TestPassword123"}')
           echo "Login response: $LOGIN"
 
-          # Extract and verify access token exists
           TOKEN=$(echo $LOGIN | python3 -c "import sys,json; print(json.load(sys.stdin).get('access_token','MISSING'))")
           if [ "$TOKEN" = "MISSING" ]; then
             echo "ERROR: Login did not return access_token"
@@ -142,7 +134,6 @@ jobs:
           fi
           echo "Login successful — token received"
 
-          # Stop server
           kill $SERVER_PID
           echo "All smoke tests passed"
 
@@ -150,16 +141,16 @@ jobs:
         run: rm -f test.db intake_system.db
 
 
-
-
-
+  # ════════════════════════════════════════════════════════════════════════════
+  # JOB 2 — Build & Push Docker Image
+  # Skipped when rollback_tag is provided
+  # ════════════════════════════════════════════════════════════════════════════
   build-and-push:
     name: Build & Push Docker Image
     runs-on: ubuntu-latest
     needs: build-and-test
-
-    # Only push on main branch (not on PRs or develop)
     if: |
+      (github.event.inputs.rollback_tag == '' || github.event.inputs.rollback_tag == null) &&
       github.event_name != 'pull_request' &&
       (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch')
 
@@ -172,7 +163,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Free up disk space — Docker builds can be large
       - name: Free disk space
         run: |
           sudo rm -rf /usr/share/dotnet
@@ -182,7 +172,6 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
         with:
-          # Use docker-container driver for full cache support
           driver-opts: |
             image=moby/buildkit:latest
 
@@ -192,25 +181,16 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # Generate image tags and labels automatically
       - name: Extract Docker metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.IMAGE_NAME }}
           tags: |
-            # Tag: latest (only on main branch)
             type=raw,value=latest,enable={{is_default_branch}}
-
-            # Tag: sha-<commit> (always — used for rollback)
             type=sha,prefix=sha-,format=short
-
-            # Tag: YYYY-MM-DD (date-based — easy to find by date)
             type=raw,value={{date 'YYYY-MM-DD'}}
-
-            # Tag: branch name (for develop branch)
             type=ref,event=branch,enable=${{ github.ref != 'refs/heads/main' }}
-
           labels: |
             org.opencontainers.image.title=Sayel Backend
             org.opencontainers.image.description=FastAPI backend for Client Intake Chat
@@ -226,7 +206,6 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           platforms: linux/amd64
-          # GitHub Actions cache — speeds up subsequent builds dramatically
           cache-from: type=gha,scope=backend
           cache-to: type=gha,scope=backend,mode=max
           provenance: false
@@ -241,7 +220,6 @@ jobs:
           echo "SHA tag: sha-${{ github.sha }}"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-      # Save the SHA tag so rollback workflow knows the previous tag
       - name: Save image tag to artifact
         run: |
           mkdir -p /tmp/artifacts
@@ -253,21 +231,20 @@ jobs:
         with:
           name: backend-image-tag
           path: /tmp/artifacts/backend-image-tag.txt
-          retention-days: 90    # Keep 90 days of tags for rollback
+          retention-days: 90
 
 
   # ════════════════════════════════════════════════════════════════════════════
   # JOB 3 — Deploy to Render
+  # Skipped when rollback_tag is provided
   # ════════════════════════════════════════════════════════════════════════════
   deploy:
     name: Deploy to Render
     runs-on: ubuntu-latest
     needs: build-and-push
-
-    # Only deploy from main branch
     if: |
-      github.ref == 'refs/heads/main' ||
-      (github.event_name == 'workflow_dispatch' && github.event.inputs.rollback_tag == '')
+      (github.event.inputs.rollback_tag == '' || github.event.inputs.rollback_tag == null) &&
+      (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch')
 
     environment:
       name: production-backend
@@ -296,7 +273,6 @@ jobs:
           if [ "$HTTP_CODE" != "201" ]; then
             exit 1
           fi
-
 
       - name: Verify deployment health
         run: |
@@ -330,13 +306,11 @@ jobs:
 
 
   # ════════════════════════════════════════════════════════════════════════════
-  # JOB 4 — Rollback (manual trigger only)
+  # JOB 4 — Rollback (manual trigger only, only when rollback_tag is set)
   # ════════════════════════════════════════════════════════════════════════════
   rollback:
     name: Rollback to Previous Image
     runs-on: ubuntu-latest
-
-    # Only runs when workflow_dispatch provides a rollback_tag
     if: |
       github.event_name == 'workflow_dispatch' &&
       github.event.inputs.rollback_tag != ''
@@ -351,7 +325,6 @@ jobs:
           ROLLBACK_TAG="${{ github.event.inputs.rollback_tag }}"
           echo "Checking if tag exists: ${{ env.IMAGE_NAME }}:$ROLLBACK_TAG"
 
-          # Check tag exists via Docker Hub API
           STATUS=$(curl -sf -o /dev/null -w "%{http_code}" \
             "https://hub.docker.com/v2/repositories/${{ secrets.DOCKERHUB_USERNAME }}/${{ secrets.DOCKERHUB_REPO_NAME_BACKEND }}/tags/$ROLLBACK_TAG/")
 
@@ -401,7 +374,6 @@ jobs:
           if [ "$HTTP_CODE" != "201" ]; then
             exit 1
           fi
-
 
       - name: Post rollback summary
         run: |
