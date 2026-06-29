@@ -260,7 +260,7 @@ jobs:
               continue
             fi
 
-            STATUS=$(echo "$RESPONSE" | python3 -c "import sys, json;try:;data = json.load(sys.stdin);print(data.get('status', 'unknown'));except Exception as e:;print('parse_error')")
+            STATUS=$(echo "$RESPONSE" | python3 -c "import sys, json;try:;data = json.load(sys.stdin);print(data.get('status', 'unknown'));except Exception as e:print('parse_error')")
 
             echo "  Status: $STATUS  (waited ${WAITED}s / ${MAX_WAIT}s)"
 
