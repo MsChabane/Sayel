@@ -140,7 +140,6 @@ jobs:
       - name: Clean up test database
         run: rm -f test.db intake_system.db
 
-
   # ════════════════════════════════════════════════════════════════════════════
   # JOB 2 — Build & Push Docker Image
   # Skipped when rollback_tag is provided
@@ -233,7 +232,6 @@ jobs:
           path: /tmp/artifacts/backend-image-tag.txt
           retention-days: 90
 
-
   # ════════════════════════════════════════════════════════════════════════════
   # JOB 3 — Deploy to Render
   # Skipped when rollback_tag is provided
@@ -264,31 +262,119 @@ jobs:
             -X POST \
             "https://api.render.com/v1/services/${SERVICE_ID}/deploys" \
             -H "Authorization: Bearer $API_KEY" \
-            -H "Content-Type: application/json" \
-           )
+            -H "Content-Type: application/json")
 
           echo "HTTP: $HTTP_CODE"
+          echo "Response:"
           cat response.json
 
           if [ "$HTTP_CODE" != "201" ]; then
+            echo "❌ Failed to trigger deploy (HTTP $HTTP_CODE)"
             exit 1
           fi
 
-      - name: Verify deployment health
+          # Extract deploy ID for polling
+          DEPLOY_ID=$(python3 -c "import sys,json; print(json.load(open('response.json')).get('id',''))")
+
+          if [ -z "$DEPLOY_ID" ]; then
+            echo "❌ Could not extract deploy ID from response"
+            exit 1
+          fi
+
+          echo "✅ Deploy triggered — ID: $DEPLOY_ID"
+          echo "DEPLOY_ID=$DEPLOY_ID" >> $GITHUB_ENV
+
+      - name: Wait for deployment to complete
+        env:
+          SERVICE_ID: ${{ secrets.RENDER_BACKEND_SERVICE_ID }}
+          API_KEY: ${{ secrets.RENDER_API_KEY }}
         run: |
-          for attempt in {1..5}; do
-            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" https://api-sayel.onrender.com/health)
+          SERVICE_ID=$(echo "$SERVICE_ID" | tr -d '[:space:]')
+
+          echo "Polling deploy ID: $DEPLOY_ID"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          MAX_WAIT=600   # 10 minutes max
+          WAITED=0
+          INTERVAL=15
+
+          while [ $WAITED -lt $MAX_WAIT ]; do
+
+            RESPONSE=$(curl -s \
+              "https://api.render.com/v1/services/${SERVICE_ID}/deploys/${DEPLOY_ID}" \
+              -H "Authorization: Bearer $API_KEY" \
+              -H "Content-Type: application/json")
+
+            if [ -z "$RESPONSE" ]; then
+              echo "⚠️  Empty response from API — retrying in ${INTERVAL}s"
+              sleep $INTERVAL
+              WAITED=$((WAITED + INTERVAL))
+              continue
+            fi
+
+            STATUS=$(echo "$RESPONSE" | python3 -c "
+          import sys, json
+          try:
+            data = json.load(sys.stdin)
+            print(data.get('status', 'unknown'))
+          except Exception as e:
+            print('parse_error')
+          ")
+
+            echo "  Status: $STATUS  (waited ${WAITED}s / ${MAX_WAIT}s)"
+
+            case "$STATUS" in
+              "live")
+                echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                echo "✅ Deployment is live!"
+                exit 0
+                ;;
+              "deactivated")
+                echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                echo "✅ Deployment deactivated (superseded by newer deploy)"
+                exit 0
+                ;;
+              "build_failed"|"update_failed"|"canceled")
+                echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                echo "❌ Deployment failed with status: $STATUS"
+                exit 1
+                ;;
+              "parse_error")
+                echo "⚠️  Could not parse response — retrying"
+                echo "Raw response: $RESPONSE"
+                ;;
+              *)
+                # created | build_in_progress | update_in_progress | pre_deploy_in_progress
+                echo "⏳ Still in progress..."
+                ;;
+            esac
+
+            sleep $INTERVAL
+            WAITED=$((WAITED + INTERVAL))
+          done
+
+          echo "❌ Timed out after ${MAX_WAIT}s waiting for deployment"
+          exit 1
+
+      - name: Verify backend is accessible
+        run: |
+          echo "Verifying backend health endpoint is accessible..."
+
+          for attempt in 1 2 3 4 5; do
+            echo "Attempt $attempt/5..."
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+              https://api-sayel.onrender.com/health 2>/dev/null || echo "000")
 
             if [ "$HTTP_CODE" = "200" ]; then
-              echo "✅ Health check passed!"
+              echo "✅ Backend is accessible (HTTP $HTTP_CODE)"
               exit 0
             fi
 
-            echo "Attempt $attempt failed (HTTP $HTTP_CODE). Retrying..."
+            echo "Got HTTP $HTTP_CODE — retrying in 5s..."
             sleep 5
           done
 
-          echo "❌ Health check failed."
+          echo "❌ Backend verification failed after 5 attempts"
           exit 1
 
       - name: Post deployment summary
@@ -303,7 +389,6 @@ jobs:
           echo "| Branch | \`${{ github.ref_name }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| URL | https://api-sayel.onrender.com |" >> $GITHUB_STEP_SUMMARY
           echo "| Deployed by | @${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY
-
 
   # ════════════════════════════════════════════════════════════════════════════
   # JOB 4 — Rollback (manual trigger only, only when rollback_tag is set)
@@ -339,14 +424,15 @@ jobs:
 
       - name: Re-tag rollback image as latest
         run: |
+          # Login first before any docker pull/push operations
+          echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login \
+            -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+
           echo "Pulling rollback image..."
           docker pull ${{ env.IMAGE_NAME }}:$ROLLBACK_TAG
 
           echo "Tagging as latest..."
           docker tag ${{ env.IMAGE_NAME }}:$ROLLBACK_TAG ${{ env.IMAGE_NAME }}:latest
-
-          echo "Logging in to Docker Hub..."
-          echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
 
           echo "Pushing latest tag..."
           docker push ${{ env.IMAGE_NAME }}:latest
@@ -366,14 +452,18 @@ jobs:
             "https://api.render.com/v1/services/${SERVICE_ID}/deploys" \
             -H "Authorization: Bearer $API_KEY" \
             -H "Content-Type: application/json" \
-           )
+            -d '{}')
 
           echo "HTTP: $HTTP_CODE"
+          echo "Response:"
           cat response.json
 
           if [ "$HTTP_CODE" != "201" ]; then
+            echo "❌ Failed to trigger rollback deploy (HTTP $HTTP_CODE)"
             exit 1
           fi
+
+          echo "✅ Rollback deploy triggered successfully"
 
       - name: Post rollback summary
         run: |
