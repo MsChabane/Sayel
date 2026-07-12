@@ -22,7 +22,7 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
    if (res.status === 401){
        toast.error(data.detail)
        if(typeof window !== 'undefined'){
-           window.location.href='/admin/login'
+      
        }
    }
   throw new Error(data.detail || `HTTP ${res.status}`)
