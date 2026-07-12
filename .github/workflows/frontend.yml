@@ -1,4 +1,4 @@
-data: Frontend CI/CD
+name: Frontend CI/CD
 
 # ── Triggers ───────────────────────────────────────────────────────────────────
 on:
