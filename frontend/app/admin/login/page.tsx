@@ -56,16 +56,6 @@ function LoginForm() {
     return () => clearTimeout(timer)
   }, [reason])
 
-  // Redirect already-logged-in users exactly once
-  useEffect(() => {
-    if (redirectCheck.current) return
-    redirectCheck.current = true
-
-    const token = localStorage.getItem('admin_token')
-    if (token) {
-      router.replace(from)
-    }
-  }, [from, router])
 
   const { register, handleSubmit, formState: { errors } } = useForm<LoginForm>({
     resolver: zodResolver(loginSchema),
