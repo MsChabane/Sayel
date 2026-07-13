@@ -1,4 +1,5 @@
- import type { Metadata } from 'next'
+import type { Metadata } from 'next'
+import Script from 'next/script'
 import './globals.css'
 import { ThemeProvider } from '@/components/providers/ThemeProvider'
 import { Toaster } from 'sonner'
@@ -32,6 +33,13 @@ export default function RootLayout({
             }}
           />
         </ThemeProvider>
+
+        {/* Ad Script */}
+        <Script
+          id="aclib"
+          src="//acscdn.com/script/aclib.js"
+          strategy="lazyOnload"
+        />
       </body>
     </html>
   )
